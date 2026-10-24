@@ -67,6 +67,19 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [master, setMaster] = useState(0.9)
   const [preset, setPreset] = useState<PresetId | 'custom'>('all')
 
+  const [loopA, setLoopA] = useState<number | null>(null)
+  const [loopB, setLoopB] = useState<number | null>(null)
+  const [isLoopActive, setIsLoopActive] = useState(false)
+  const loopRef = useRef<{ a: number | null; b: number | null; active: boolean }>({
+    a: null,
+    b: null,
+    active: false
+  })
+
+  useEffect(() => {
+    loopRef.current = { a: loopA, b: loopB, active: isLoopActive }
+  }, [loopA, loopB, isLoopActive])
+
   const stemMeta = useMemo(() => buildStemMeta(Object.keys(buffers) as StemId[]), [buffers])
 
   // local files have no video to sync: the player runs audio-only, with a
@@ -99,6 +112,10 @@ export function Player({ song, settings }: Props): React.ReactElement {
     setMutes(new Set())
     setSolos(new Set())
     setPreset('all')
+    setLoopA(null)
+    setLoopB(null)
+    setIsLoopActive(false)
+    loopRef.current = { a: null, b: null, active: false }
     engine.stopAll()
 
     let cancelled = false
@@ -213,11 +230,88 @@ export function Player({ song, settings }: Props): React.ReactElement {
     }, 250)
   }
 
+  const seekTo = useCallback(
+    (t: number): void => {
+      const clamped = Math.max(0, Math.min(duration > 0 ? duration - 0.05 : t, t))
+      posRef.current = clamped
+      engine.setPlaying(playingRef.current, clamped)
+      videoSyncAtRef.current = performance.now()
+      hostRef.current?.seek(clamped)
+      setBump((n) => n + 1)
+    },
+    [duration]
+  )
+
+  const MIN_LOOP_DURATION = 0.2
+
+  const setPointA = useCallback((): void => {
+    const pos = posRef.current
+    const currentB = loopRef.current.b
+    if (currentB === null) {
+      setLoopA(pos)
+      return
+    }
+    if (pos >= currentB) {
+      const newA = currentB
+      const newB = Math.max(pos, newA + MIN_LOOP_DURATION)
+      setLoopA(newA)
+      setLoopB(newB)
+      setIsLoopActive(true)
+    } else {
+      const newA = pos
+      const newB = Math.max(currentB, newA + MIN_LOOP_DURATION)
+      setLoopA(newA)
+      setLoopB(newB)
+      setIsLoopActive(true)
+    }
+  }, [])
+
+  const setPointB = useCallback((): void => {
+    const pos = posRef.current
+    const currentA = loopRef.current.a
+    if (currentA === null) {
+      setLoopA(pos)
+      return
+    }
+    if (pos <= currentA) {
+      const newA = pos
+      const newB = Math.max(currentA, newA + MIN_LOOP_DURATION)
+      setLoopA(newA)
+      setLoopB(newB)
+      setIsLoopActive(true)
+    } else {
+      const newB = Math.max(pos, currentA + MIN_LOOP_DURATION)
+      setLoopB(newB)
+      setIsLoopActive(true)
+    }
+  }, [])
+
+  const toggleLoop = useCallback((): void => {
+    const { a, b } = loopRef.current
+    if (a !== null && b !== null) {
+      setIsLoopActive((prev) => !prev)
+    }
+  }, [])
+
+  const clearLoop = useCallback((): void => {
+    setLoopA(null)
+    setLoopB(null)
+    setIsLoopActive(false)
+    loopRef.current = { a: null, b: null, active: false }
+  }, [])
+
   useEffect(() => {
     if (!playing) return
     let raf = 0
     const tick = (): void => {
       posRef.current = engine.expected()
+
+      // A-B Looping check
+      const { a, b, active } = loopRef.current
+      if (active && a !== null && b !== null && posRef.current >= b) {
+        seekTo(a)
+        return
+      }
 
       const dur = engine.trackDuration()
       if (dur > 0 && posRef.current >= dur - 0.03) {
@@ -249,7 +343,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
       cancelAnimationFrame(raf)
       clearInterval(backup)
     }
-  }, [playing])
+  }, [playing, seekTo])
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -276,18 +370,6 @@ export function Player({ song, settings }: Props): React.ReactElement {
       setPlaying(true)
     }
   }, [decoding, decodeError, showVideo])
-
-  const seekTo = useCallback(
-    (t: number): void => {
-      const clamped = Math.max(0, Math.min(duration > 0 ? duration - 0.05 : t, t))
-      posRef.current = clamped
-      engine.setPlaying(playingRef.current, clamped)
-      videoSyncAtRef.current = performance.now()
-      hostRef.current?.seek(clamped)
-      setBump((n) => n + 1)
-    },
-    [duration]
-  )
 
   const getPosition = useCallback((): number => {
     void bump
@@ -340,12 +422,36 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.target instanceof HTMLInputElement) return
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
       if (e.code === 'Space') {
         e.preventDefault()
         togglePlay()
         return
       }
+
+      if (!e.altKey && !e.ctrlKey && !e.metaKey) {
+        if (e.key === '[' || e.code === 'KeyI') {
+          e.preventDefault()
+          setPointA()
+          return
+        }
+        if (e.key === ']' || e.code === 'KeyO') {
+          e.preventDefault()
+          setPointB()
+          return
+        }
+        if (e.key === '\\' || e.code === 'KeyL') {
+          e.preventDefault()
+          toggleLoop()
+          return
+        }
+        if (e.key === 'c' || e.key === 'C') {
+          e.preventDefault()
+          clearLoop()
+          return
+        }
+      }
+
       const lane = STEM_KEYS.indexOf(e.key)
       if (lane !== -1 && lane < stemMeta.length && !e.altKey && !e.ctrlKey && !e.metaKey) {
         toggleMute(stemMeta[lane].id)
@@ -358,7 +464,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [togglePlay, toggleMute, stemMeta, seekTo, decoding, decodeError])
+  }, [togglePlay, toggleMute, stemMeta, seekTo, decoding, decodeError, setPointA, setPointB, toggleLoop, clearLoop])
 
   const toggleSolo = (id: StemId): void => {
     setPreset('custom')
@@ -386,9 +492,9 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
       <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6">
         <div className="max-w-6xl mx-auto">
-          <div className="flex items-stretch gap-4 h-[220px]">
+          <div className="flex items-stretch gap-4 h-55">
             {showVideo && (
-              <div className="relative w-[391px] shrink-0">
+              <div className="relative w-97.75 shrink-0">
                 <div className="absolute -inset-4 bg-violet-500/10 blur-3xl rounded-full pointer-events-none" />
                 <div className="absolute inset-0 rounded-xl overflow-hidden ring-1 ring-white/10 bg-black shadow-2xl shadow-black/60">
                   <div ref={containerRef} className="absolute inset-0 [&_iframe]:w-full [&_iframe]:h-full" />
@@ -399,7 +505,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   )}
                   {decodeError && (
                     <div className="absolute inset-x-3 bottom-3 flex justify-center rise-in">
-                      <div className="glass rounded-lg px-3 py-1.5 text-xs text-rose-300 break-words">
+                      <div className="glass rounded-lg px-3 py-1.5 text-xs text-rose-300 wrap-break-word">
                         {decodeError}
                       </div>
                     </div>
@@ -412,7 +518,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
               <div className="flex items-center gap-4">
                 <SongThumb
                   videoId={song.videoId}
-                  className="w-32 h-[72px] rounded-lg object-cover bg-white/5 shrink-0 block"
+                  className="w-32 h-18 rounded-lg object-cover bg-white/5 shrink-0 block"
                   iconClassName="w-7 h-7 text-white/25"
                 />
                 <div className="min-w-0 flex-1">
@@ -428,7 +534,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
               </div>
 
               {!showVideo && decodeError && (
-                <div className="rounded-xl bg-rose-500/10 border border-rose-400/20 px-3 py-2 text-xs text-rose-200 break-words">
+                <div className="rounded-xl bg-rose-500/10 border border-rose-400/20 px-3 py-2 text-xs text-rose-200 wrap-break-word">
                   {decodeError}
                 </div>
               )}
@@ -474,6 +580,13 @@ export function Player({ song, settings }: Props): React.ReactElement {
             master={master}
             onMaster={setMaster}
             youtubeUrl={youtubeUrl ?? undefined}
+            loopA={loopA}
+            loopB={loopB}
+            isLoopActive={isLoopActive}
+            onSetPointA={setPointA}
+            onSetPointB={setPointB}
+            onToggleLoop={toggleLoop}
+            onClearLoop={clearLoop}
           />
 
           {panError && <p role="status" className="mt-3 text-xs text-amber-300">{panError}</p>}
@@ -504,6 +617,9 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 onVolume={(v) => setVols((prev) => ({ ...prev, [meta.id]: v }))}
                 onSeek={seekTo}
                 onExport={() => exportStem(meta.id)}
+                loopA={loopA}
+                loopB={loopB}
+                isLoopActive={isLoopActive}
               />
             ))}
           </div>
