@@ -8,11 +8,11 @@ import {
   type MenuItemConstructorOptions
 } from 'electron'
 import { join, normalize, extname } from 'path'
-import { existsSync, copyFileSync, createReadStream, statSync } from 'fs'
+import { existsSync, copyFileSync, createReadStream, statSync, readFileSync } from 'fs'
 import { spawn } from 'child_process'
 import { createServer, type Server } from 'http'
 import type { AddressInfo } from 'net'
-import type { AppSettings } from '../shared/types'
+import { SUBSTEM_MAP, type AppSettings, type StemId } from '../shared/types'
 import {
   detectTools,
   bootstrap,
@@ -29,12 +29,15 @@ import {
   engineStatus,
   getStatus,
   venvPython,
-  detectBeatsScript
+  detectBeatsScript,
+  subsplitScript,
+  modelsDir
 } from './env'
 import { loadSettings, saveSettings } from './settings'
 import {
   loadSongs, removeSong, clearLibrary, stemBuffers, stemsDir, stemsFor, sanitizeName,
-  exportStems, transcodeToAac, mixWavPath, loadStemPan, saveStemPan, loadBeatGrid, gridJsonPath
+  exportStems, transcodeToAac, mixWavPath, loadStemPan, saveStemPan, loadBeatGrid, gridJsonPath,
+  readSelectedBuffers, replaceStemWithSubStems, restoreParentStem
 } from './library'
 import { AUDIO_EXTENSIONS } from '../shared/local'
 import { startJob, startLocalJob, cancelJob, searchYouTube } from './pipeline'
@@ -266,6 +269,76 @@ app.whenReady().then(async () => {
     const grid = loadBeatGrid(videoId)
     if (!grid) throw new Error('Failed to load generated beat grid')
     return grid
+  })
+  ipcMain.handle('song:stem:subsplit', async (_e, videoId: string, parentStem: StemId) => {
+    const subStems = SUBSTEM_MAP[parentStem]
+    if (!subStems || subStems.length === 0) {
+      throw new Error(`Stem "${parentStem}" does not support sub-splitting`)
+    }
+    const dir = stemsDir(videoId)
+    const inputPath = join(dir, `${parentStem}.wav`)
+    if (!existsSync(inputPath)) {
+      throw new Error(`Parent stem file not found: ${parentStem}.wav`)
+    }
+
+    const py = venvPython()
+    const script = subsplitScript()
+    const scriptMtime = existsSync(script) ? statSync(script).mtimeMs : 0
+    const verFile = join(dir, `.subsplit_${parentStem}`)
+    const verMatch = existsSync(verFile) && readFileSync(verFile, 'utf8').trim() === '3'
+    const allCached = verMatch && subStems.every((s) => {
+      const p = join(dir, `${s}.wav`)
+      return existsSync(p) && statSync(p).mtimeMs >= scriptMtime
+    })
+    if (!allCached) {
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn(
+          py,
+          [script, '--input', inputPath, '--stem', parentStem, '--out', dir, '--models-dir', modelsDir()],
+          { env: { ...process.env } }
+        )
+        let buf = ''
+        proc.stdout?.on('data', (chunk: Buffer) => {
+          buf += chunk.toString()
+          const lines = buf.split(/[\r\n]+/)
+          buf = lines.pop() ?? ''
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const parsed = JSON.parse(line) as { type?: string; pct?: number; message?: string }
+              if (parsed.type === 'progress' && typeof parsed.pct === 'number') {
+                for (const win of BrowserWindow.getAllWindows()) {
+                  win.webContents.send('subsplit:progress', {
+                    videoId,
+                    stem: parentStem,
+                    pct: Math.min(99, Math.max(0, Math.round(parsed.pct))),
+                    message: parsed.message
+                  })
+                }
+              }
+            } catch {}
+          }
+        })
+        proc.on('close', (code: number | null) => {
+          if (code === 0) resolve()
+          else reject(new Error(`subsplit failed with code ${code}`))
+        })
+        proc.on('error', reject)
+      })
+    }
+
+    const updatedStems = replaceStemWithSubStems(videoId, parentStem, subStems)
+    const buffers = await readSelectedBuffers(videoId, subStems)
+    return { stems: updatedStems, buffers }
+  })
+  ipcMain.handle('song:stem:merge', async (_e, videoId: string, parentStem: StemId) => {
+    const subStems = SUBSTEM_MAP[parentStem]
+    if (!subStems || subStems.length === 0) {
+      throw new Error(`Invalid parent stem: ${parentStem}`)
+    }
+    const updatedStems = restoreParentStem(videoId, parentStem, subStems)
+    const buffers = await readSelectedBuffers(videoId, [parentStem])
+    return { stems: updatedStems, buffers }
   })
   ipcMain.handle('library:delete', (_e, videoId: string) => removeSong(videoId))
   ipcMain.handle('library:clear', () => {

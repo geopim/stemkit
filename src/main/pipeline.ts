@@ -126,8 +126,9 @@ function resolveEngine(requestedModel: string, stems?: string[]): EnginePlan {
   }
   const modelTag =
     engine +
+    (engine === MODEL_EXTENDED && settings.roformerVocals ? '-sw6' : '') +
     (settings.htdemucsFt && engine !== MODEL_EXTENDED ? '-ft' : '') +
-    (settings.shifts === 2 ? '@s2' : '')
+    (settings.shifts === 2 && !(engine === MODEL_EXTENDED && settings.roformerVocals) ? '@s2' : '')
 
   // windows/linux honor the GPU toggle: 'cpu' is passed explicitly because
   // roformer.py's 'auto' prefers CUDA whenever the venv's torch supports it
@@ -479,25 +480,50 @@ async function runSeparation(
 
     if (engine === MODEL_EXTENDED) {
       progress(job, 'separate', 0, 'Separating stems')
-      await runProcess(
-        job,
-        venvPython(),
-        [
-          separateScript(),
-          '--input',
-          mixWavPath(videoId),
-          '--out',
-          stemsDir(videoId),
-          '--model',
-          MODEL_EXTENDED,
-          '--device',
-          deviceArg(),
-          '--shifts',
-          String(settings.shifts),
-          ...(stems?.length ? ['--only', stems.join(',')] : [])
-        ],
-        lineParsers((pct) => pct)
-      )
+      if (settings.roformerVocals) {
+        if (!(await ensureEngineDeps())) {
+          bail('Could not prepare the engine components for 6-stem studio separation')
+        }
+        await runProcess(
+          job,
+          venvPython(),
+          [
+            roformerScript(),
+            '--input',
+            mixWavPath(videoId),
+            '--out',
+            stemsDir(videoId),
+            '--ckpt-dir',
+            modelsDir(),
+            '--model',
+            'sw6',
+            '--device',
+            deviceArg(),
+            ...(stems?.length ? ['--only', stems.join(',')] : [])
+          ],
+          lineParsers((pct) => pct)
+        )
+      } else {
+        await runProcess(
+          job,
+          venvPython(),
+          [
+            separateScript(),
+            '--input',
+            mixWavPath(videoId),
+            '--out',
+            stemsDir(videoId),
+            '--model',
+            MODEL_EXTENDED,
+            '--device',
+            deviceArg(),
+            '--shifts',
+            String(settings.shifts),
+            ...(stems?.length ? ['--only', stems.join(',')] : [])
+          ],
+          lineParsers((pct) => pct)
+        )
+      }
     } else if (engine === MODEL_DEFAULT) {
       const otherStems = (
         stems?.length ? stems : ['drums', 'bass', 'other', 'vocals']

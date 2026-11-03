@@ -410,7 +410,11 @@ export function Transport({
           ))}
         </div>
 
-        <div className="flex items-center gap-3 w-44">
+        <div
+          className="flex items-center gap-2.5 w-52"
+          onDoubleClick={() => onMaster(1)}
+          title={`Master volume: ${Math.round(master * 100)}% (Double-click to reset to 100%)`}
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="w-4 h-4 text-white/60 shrink-0">
             <path d="M11 5 6 9H3v6h3l5 4V5Z" />
             <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />
@@ -427,6 +431,9 @@ export function Transport({
               background: `linear-gradient(to right, #fff ${master * 100}%, rgba(255,255,255,0.14) ${master * 100}%)`
             }}
           />
+          <span className="w-9 text-right text-[11px] font-mono tabular-nums text-white/60 shrink-0 select-none">
+            {Math.round(master * 100)}%
+          </span>
         </div>
 
         {youtubeUrl && (

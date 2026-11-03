@@ -160,17 +160,33 @@ function panSong(videoId: string): Song {
 function normalizePan(song: Song, value: unknown): StemPanMap {
   const pans: StemPanMap = {}
   if (!value || typeof value !== 'object' || Array.isArray(value)) return pans
-  const allowed = new Set<StemId>(['vocals', 'drums', 'bass', 'other', 'piano', 'guitar', 'click'])
-  for (const id of stemsFor(song)) {
-    if (!allowed.has(id as StemId)) continue
+  const allowed = new Set<StemId>([
+    'vocals',
+    'drums',
+    'bass',
+    'other',
+    'piano',
+    'guitar',
+    'click',
+    'lead_vocals',
+    'backing_vocals',
+    'acoustic_guitar',
+    'electric_guitar',
+    'drums_kick',
+    'drums_snare',
+    'drums_cymbals',
+    'piano_low',
+    'piano_high',
+    'other_pads',
+    'other_lead'
+  ])
+  for (const id of allowed) {
     const pan = (value as Record<string, unknown>)[id]
     if (typeof pan === 'number' && Number.isFinite(pan)) {
-      pans[id as StemId] = Math.max(-1, Math.min(1, pan))
+      pans[id] = Math.max(-1, Math.min(1, pan))
     }
   }
-  if (allowed.has('click') && typeof (value as Record<string, unknown>)['click'] === 'number') {
-    pans['click'] = Math.max(-1, Math.min(1, (value as Record<string, unknown>)['click'] as number))
-  }
+  void song
   return pans
 }
 
@@ -254,4 +270,72 @@ export async function stemBuffers(videoId: string, stems?: string[]): Promise<Re
     })
   )
   return out
+}
+
+export async function readSelectedBuffers(videoId: string, names: string[]): Promise<Record<string, Uint8Array>> {
+  const dir = stemsDir(videoId)
+  const out: Record<string, Uint8Array> = {}
+  await Promise.all(
+    names.map(async (name) => {
+      const file = join(dir, `${name}.wav`)
+      if (!existsSync(file)) return
+      out[name] = new Uint8Array(await readFile(file))
+    })
+  )
+  return out
+}
+
+export function replaceStemWithSubStems(videoId: string, parentStem: string, subStems: string[]): string[] {
+  const songs = loadSongs()
+  const idx = songs.findIndex((s) => s.videoId === videoId)
+  if (idx === -1) return []
+  const current = stemsFor(songs[idx])
+  const next: string[] = []
+  let replaced = false
+  for (const s of current) {
+    if (s === parentStem) {
+      for (const sub of subStems) {
+        if (!next.includes(sub)) next.push(sub)
+      }
+      replaced = true
+    } else if (!subStems.includes(s)) {
+      next.push(s)
+    }
+  }
+  if (!replaced) {
+    for (const sub of subStems) {
+      if (!next.includes(sub)) next.push(sub)
+    }
+  }
+  songs[idx] = { ...songs[idx], stems: next }
+  saveSongs(songs)
+  return next
+}
+
+export function restoreParentStem(videoId: string, parentStem: string, subStems: string[]): string[] {
+  const songs = loadSongs()
+  const idx = songs.findIndex((s) => s.videoId === videoId)
+  if (idx === -1) return []
+  const current = stemsFor(songs[idx])
+  const next: string[] = []
+  let inserted = false
+  for (const s of current) {
+    if (subStems.includes(s)) {
+      if (!inserted) {
+        next.push(parentStem)
+        inserted = true
+      }
+    } else if (s === parentStem) {
+      if (!inserted) {
+        next.push(parentStem)
+        inserted = true
+      }
+    } else {
+      next.push(s)
+    }
+  }
+  if (!inserted) next.push(parentStem)
+  songs[idx] = { ...songs[idx], stems: next }
+  saveSongs(songs)
+  return next
 }

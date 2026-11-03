@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
-import type { StemId } from '../../../shared/types'
-import { DownloadIcon } from './Icons'
+import type { StemId, ParentStemId } from '../../../shared/types'
+import { DownloadIcon, SplitTrackIcon, MergeTrackIcon } from './Icons'
 import { PanKnob } from './PanKnob'
 
 export interface StemMeta {
@@ -8,6 +8,7 @@ export interface StemMeta {
   label: string
   color: string
   icon: React.ReactNode
+  parent?: ParentStemId
 }
 
 const BUCKETS = 1600
@@ -47,6 +48,13 @@ interface Props {
   onVolume: (v: number) => void
   onSeek: (seconds: number) => void
   onExport?: () => void
+  onSubsplit?: () => void
+  subsplitLabel?: string
+  isSplitting?: boolean
+  splitPct?: number
+  splitMessage?: string
+  onMergeParent?: () => void
+  mergeLabel?: string
   loopA?: number | null
   loopB?: number | null
   isLoopActive?: boolean
@@ -68,6 +76,13 @@ export function StemLane({
   onVolume,
   onSeek,
   onExport,
+  onSubsplit,
+  subsplitLabel,
+  isSplitting = false,
+  splitPct,
+  splitMessage,
+  onMergeParent,
+  mergeLabel,
   loopA = null,
   loopB = null,
   isLoopActive = false
@@ -169,14 +184,16 @@ export function StemLane({
         audible ? 'opacity-100' : 'opacity-45'
       }`}
     >
-      <div className="flex items-center gap-2.5 w-36 shrink-0">
+      <div className="flex items-center gap-2.5 w-44 shrink-0 min-w-0">
         <span
-          className="flex items-center justify-center w-7 h-7 rounded-lg"
+          className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0"
           style={{ background: `${meta.color}22`, color: meta.color }}
         >
           {meta.icon}
         </span>
-        <span className="text-sm font-medium capitalize">{meta.label}</span>
+        <span className="text-sm font-medium capitalize truncate" title={meta.label}>
+          {meta.label}
+        </span>
       </div>
 
       <button
@@ -208,20 +225,69 @@ export function StemLane({
         className="no-drag flex-1 h-14 rounded-lg cursor-pointer min-w-0"
       />
 
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.01}
-        value={volume}
-        onChange={(e) => onVolume(parseFloat(e.target.value))}
-        className="no-drag w-24 shrink-0"
-        style={{
-          background: `linear-gradient(to right, ${meta.color} ${volume * 100}%, rgba(255,255,255,0.14) ${volume * 100}%)`
-        }}
-      />
+      <div
+        className="no-drag flex items-center gap-2 shrink-0"
+        onDoubleClick={() => onVolume(1)}
+        title={`Volume: ${Math.round(volume * 100)}% (Double-click to reset to 100%)`}
+      >
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={volume}
+          onChange={(e) => onVolume(parseFloat(e.target.value))}
+          className="no-drag w-24 shrink-0"
+          style={{
+            background: `linear-gradient(to right, ${meta.color} ${volume * 100}%, rgba(255,255,255,0.14) ${volume * 100}%)`
+          }}
+        />
+        <span className="w-9 text-right text-[11px] font-mono tabular-nums text-white/55 select-none">
+          {Math.round(volume * 100)}%
+        </span>
+      </div>
 
       <PanKnob label={meta.label} color={meta.color} value={pan} onChange={onPan} />
+
+      {onSubsplit && (
+        <button
+          onClick={onSubsplit}
+          disabled={isSplitting}
+          title={
+            isSplitting
+              ? splitMessage
+                ? `${splitMessage} (${splitPct ?? 0}%)`
+                : `Separating… ${splitPct ?? 0}%`
+              : (subsplitLabel ?? 'Sub-split stem')
+          }
+          className={`no-drag h-6 rounded-md flex items-center justify-center gap-1.5 transition-all shrink-0 ${
+            isSplitting
+              ? 'px-2 bg-violet-500/20 text-violet-300 cursor-wait border border-violet-400/25'
+              : 'w-6 bg-white/5 hover:bg-violet-500/20 text-white/45 hover:text-violet-300'
+          }`}
+        >
+          {isSplitting ? (
+            <>
+              <span className="w-3 h-3 rounded-full border-2 border-violet-300/30 border-t-violet-300 animate-spin shrink-0" />
+              <span className="text-[11px] font-mono font-semibold tabular-nums">
+                {splitPct ?? 0}%
+              </span>
+            </>
+          ) : (
+            <SplitTrackIcon className="w-3.5 h-3.5" />
+          )}
+        </button>
+      )}
+
+      {onMergeParent && (
+        <button
+          onClick={onMergeParent}
+          title={mergeLabel ?? 'Merge back to single stem'}
+          className="no-drag w-6 h-6 rounded-md bg-white/5 hover:bg-amber-500/20 text-white/45 hover:text-amber-300 flex items-center justify-center transition-colors shrink-0"
+        >
+          <MergeTrackIcon className="w-3.5 h-3.5" />
+        </button>
+      )}
 
       {onExport && (
         <button

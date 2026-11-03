@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSettings, Song, StemId, StemPanMap, BeatGridData } from '../../../shared/types'
+import { SUBSTEM_MAP, type AppSettings, type Song, type StemId, type ParentStemId, type StemPanMap, type BeatGridData } from '../../../shared/types'
 import { engine, decodePayload, type BufferMap } from '../lib/engine'
-import { buildStemMeta } from '../lib/stems'
+import { buildStemMeta, SUBSPLIT_LABELS } from '../lib/stems'
 import { fmtTime } from '../lib/format'
 import { SongThumb } from '../lib/thumbs'
 import { YouTubeHost, type YTState } from '../lib/youtube'
@@ -22,13 +22,7 @@ const bufferCache = new Map<string, Promise<BufferCacheMap>>()
 const CACHE_LIMIT = 2
 
 function getDecoded(videoId: string): Promise<BufferCacheMap> {
-  const cached = bufferCache.get(videoId)
-  if (cached) {
-    // re-insert so the entry is last again (Map iterates in insertion order)
-    bufferCache.delete(videoId)
-    bufferCache.set(videoId, cached)
-    return cached
-  }
+  bufferCache.delete(videoId)
   const entry = window.stemkit
     .getBuffers(videoId)
     .then((payload) => decodePayload(payload))
@@ -105,6 +99,121 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [metronomeOn, setMetronomeOn] = useState(false)
   const [beatGrid, setBeatGrid] = useState<BeatGridData | null>(null)
   const [detectingBpm, setDetectingBpm] = useState(false)
+  const [splittingStems, setSplittingStems] = useState<Set<StemId>>(new Set())
+  const [splitProgress, setSplitProgress] = useState<Partial<Record<StemId, { pct: number; message?: string }>>>({})
+
+  useEffect(() => {
+    return window.stemkit.onSubsplitProgress((ev) => {
+      if (ev.videoId !== song.videoId) return
+      setSplitProgress((prev) => ({
+        ...prev,
+        [ev.stem]: { pct: ev.pct, message: ev.message }
+      }))
+    })
+  }, [song.videoId])
+
+  const handleSubsplit = useCallback(
+    async (parentId: StemId) => {
+      if (splittingStems.has(parentId)) return
+      setSplittingStems((prev) => new Set(prev).add(parentId))
+      setSplitProgress((prev) => ({ ...prev, [parentId]: { pct: 0 } }))
+      try {
+        const res = await window.stemkit.subsplitStem(song.videoId, parentId)
+        const decodedNew = await decodePayload(res.buffers)
+        setBuffers((prev) => {
+          const next = { ...prev }
+          delete next[parentId]
+          Object.assign(next, decodedNew)
+          bufferCache.set(song.videoId, Promise.resolve(next))
+          engine.setBuffers(next)
+          if (playingRef.current) {
+            engine.setPlaying(true, posRef.current)
+          }
+          return next
+        })
+        setVols((prev) => {
+          const next = { ...prev }
+          const parentVol = prev[parentId] ?? 1
+          for (const k of Object.keys(decodedNew)) {
+            if (next[k as StemId] === undefined) next[k as StemId] = parentVol
+          }
+          return next
+        })
+        setPans((prev) => {
+          const next = { ...prev }
+          const parentPan = prev[parentId] ?? 0
+          for (const k of Object.keys(decodedNew)) {
+            if (next[k as StemId] === undefined) next[k as StemId] = parentPan
+          }
+          pansRef.current = next
+          return next
+        })
+        setMutes((prev) => {
+          if (!prev.has(parentId)) return prev
+          const next = new Set(prev)
+          next.delete(parentId)
+          for (const k of Object.keys(decodedNew)) next.add(k as StemId)
+          return next
+        })
+        setSolos((prev) => {
+          if (!prev.has(parentId)) return prev
+          const next = new Set(prev)
+          next.delete(parentId)
+          for (const k of Object.keys(decodedNew)) next.add(k as StemId)
+          return next
+        })
+      } catch (err) {
+        console.warn('Subsplit failed:', err)
+      } finally {
+        setSplittingStems((prev) => {
+          const next = new Set(prev)
+          next.delete(parentId)
+          return next
+        })
+        setSplitProgress((prev) => {
+          const next = { ...prev }
+          delete next[parentId]
+          return next
+        })
+      }
+    },
+    [song.videoId, splittingStems]
+  )
+
+  const handleMergeParent = useCallback(
+    async (parentId: ParentStemId) => {
+      const subStems = SUBSTEM_MAP[parentId] ?? []
+      try {
+        const res = await window.stemkit.mergeSubStems(song.videoId, parentId)
+        const decodedParent = await decodePayload(res.buffers)
+        setBuffers((prev) => {
+          const next = { ...prev }
+          for (const sub of subStems) delete next[sub]
+          Object.assign(next, decodedParent)
+          bufferCache.set(song.videoId, Promise.resolve(next))
+          engine.setBuffers(next)
+          if (playingRef.current) {
+            engine.setPlaying(true, posRef.current)
+          }
+          return next
+        })
+        setVols((prev) => ({ ...prev, [parentId]: prev[parentId] ?? 1 }))
+        setMutes((prev) => {
+          const next = new Set(prev)
+          for (const sub of subStems) next.delete(sub)
+          return next
+        })
+        setSolos((prev) => {
+          const next = new Set(prev)
+          for (const sub of subStems) next.delete(sub)
+          return next
+        })
+      } catch (err) {
+        console.warn('Merge failed:', err)
+      }
+    },
+    [song.videoId]
+  )
 
 
 
@@ -465,18 +574,27 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
   const applyPreset = (p: PresetId): void => {
     setPreset(p)
+    const vocalIds: StemId[] = ['vocals', 'lead_vocals', 'backing_vocals']
+    const drumBassIds: StemId[] = ['drums', 'drums_kick', 'drums_snare', 'drums_cymbals', 'bass']
     if (p === 'all') {
       setMutes(new Set<StemId>(['click']))
       setSolos(new Set())
     } else if (p === 'karaoke') {
       setMutes(new Set<StemId>(['click']))
-      setSolos(new Set<StemId>(stemMeta.filter((s) => s.id !== 'vocals' && s.id !== 'click').map((s) => s.id)))
+      const hasSubVocals = stemMeta.some((s) => s.id === 'lead_vocals' || s.id === 'backing_vocals')
+      setSolos(
+        new Set<StemId>(
+          stemMeta
+            .filter((s) => s.id !== 'click' && (hasSubVocals ? s.id !== 'lead_vocals' : s.id !== 'vocals'))
+            .map((s) => s.id)
+        )
+      )
     } else if (p === 'acapella') {
       setMutes(new Set<StemId>(['click']))
-      setSolos(new Set<StemId>(['vocals']))
+      setSolos(new Set<StemId>(stemMeta.filter((s) => vocalIds.includes(s.id)).map((s) => s.id)))
     } else if (p === 'drumnbass') {
       setMutes(new Set<StemId>(['click']))
-      setSolos(new Set<StemId>(['drums', 'bass']))
+      setSolos(new Set<StemId>(stemMeta.filter((s) => drumBassIds.includes(s.id)).map((s) => s.id)))
     }
   }
 
@@ -726,6 +844,13 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 onVolume={(v) => setVols((prev) => ({ ...prev, [meta.id]: v }))}
                 onSeek={seekTo}
                 onExport={() => exportStem(meta.id)}
+                onSubsplit={SUBSTEM_MAP[meta.id] ? () => void handleSubsplit(meta.id) : undefined}
+                subsplitLabel={SUBSPLIT_LABELS[meta.id]}
+                isSplitting={splittingStems.has(meta.id)}
+                splitPct={splitProgress[meta.id]?.pct}
+                splitMessage={splitProgress[meta.id]?.message}
+                onMergeParent={meta.parent ? () => void handleMergeParent(meta.parent!) : undefined}
+                mergeLabel={meta.parent ? `Merge back into single ${meta.parent} stem` : undefined}
                 loopA={loopA}
                 loopB={loopB}
                 isLoopActive={isLoopActive}

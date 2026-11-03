@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
-import type { JobEvent, EnvEvent, UpdateEvent, AppSettings, StemKitApi } from '../shared/types'
+import type { JobEvent, EnvEvent, UpdateEvent, AppSettings, StemKitApi, SubsplitProgressEvent } from '../shared/types'
 
 function subscribe<T>(channel: string, cb: (data: T) => void): () => void {
   const handler = (_e: IpcRendererEvent, data: T): void => cb(data)
@@ -21,6 +21,9 @@ const api: StemKitApi = {
   setStemPan: (videoId, pans) => ipcRenderer.invoke('song:pan:set', videoId, pans),
   getBeatGrid: (videoId) => ipcRenderer.invoke('song:grid:get', videoId),
   detectBeatGrid: (videoId) => ipcRenderer.invoke('song:grid:detect', videoId),
+  subsplitStem: (videoId, stem) => ipcRenderer.invoke('song:stem:subsplit', videoId, stem),
+  mergeSubStems: (videoId, parentStem) => ipcRenderer.invoke('song:stem:merge', videoId, parentStem),
+  onSubsplitProgress: (cb) => subscribe<SubsplitProgressEvent>('subsplit:progress', cb),
   exportStem: (videoId, stem) => ipcRenderer.invoke('stem:export', videoId, stem),
   exportAllStems: (videoId) => ipcRenderer.invoke('stems:export-all', videoId),
   searchYouTube: (query) => ipcRenderer.invoke('search:youtube', query),

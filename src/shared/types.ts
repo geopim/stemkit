@@ -1,5 +1,53 @@
-export type StemId = 'vocals' | 'drums' | 'bass' | 'other' | 'piano' | 'guitar' | 'click'
+export type ParentStemId = 'vocals' | 'drums' | 'bass' | 'other' | 'piano' | 'guitar'
+export type SubStemId =
+  | 'lead_vocals'
+  | 'backing_vocals'
+  | 'acoustic_guitar'
+  | 'electric_guitar'
+  | 'drums_kick'
+  | 'drums_snare'
+  | 'drums_cymbals'
+  | 'piano_low'
+  | 'piano_high'
+  | 'other_pads'
+  | 'other_lead'
+
+export type StemId = ParentStemId | SubStemId | 'click'
 export type StemPanMap = Partial<Record<StemId, number>>
+
+export const SUBSTEM_MAP: Partial<Record<StemId, SubStemId[]>> = {
+  vocals: ['lead_vocals', 'backing_vocals'],
+  guitar: ['acoustic_guitar', 'electric_guitar'],
+  drums: ['drums_kick', 'drums_snare', 'drums_cymbals'],
+  piano: ['piano_low', 'piano_high'],
+  other: ['other_pads', 'other_lead']
+}
+
+export const SUBSTEM_PARENT: Partial<Record<StemId, ParentStemId>> = {
+  lead_vocals: 'vocals',
+  backing_vocals: 'vocals',
+  acoustic_guitar: 'guitar',
+  electric_guitar: 'guitar',
+  drums_kick: 'drums',
+  drums_snare: 'drums',
+  drums_cymbals: 'drums',
+  piano_low: 'piano',
+  piano_high: 'piano',
+  other_pads: 'other',
+  other_lead: 'other'
+}
+
+export interface SubsplitResult {
+  stems: string[]
+  buffers: Record<string, Uint8Array>
+}
+
+export interface SubsplitProgressEvent {
+  videoId: string
+  stem: StemId
+  pct: number
+  message?: string
+}
 
 // which GPU vendor GPU acceleration targets: NVIDIA via CUDA torch (windows
 // + linux), AMD via ROCm torch (linux only)
@@ -154,6 +202,9 @@ export interface StemKitApi {
   setStemPan(videoId: string, pans: StemPanMap): Promise<void>
   getBeatGrid(videoId: string): Promise<BeatGridData | null>
   detectBeatGrid(videoId: string): Promise<BeatGridData>
+  subsplitStem(videoId: string, stem: StemId): Promise<SubsplitResult>
+  mergeSubStems(videoId: string, parentStem: StemId): Promise<SubsplitResult>
+  onSubsplitProgress(cb: (ev: SubsplitProgressEvent) => void): () => void
   exportStem(videoId: string, stem: string): Promise<{ saved: boolean; path?: string }>
   exportAllStems(videoId: string): Promise<{ saved: boolean; path?: string; count?: number }>
   searchYouTube(query: string): Promise<SearchResult[]>

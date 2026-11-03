@@ -128,6 +128,13 @@ export function detectBeatsScript(): string {
   return join(app.getAppPath(), 'python', 'detect_beats.py')
 }
 
+export function subsplitScript(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'python', 'subsplit.py')
+  }
+  return join(app.getAppPath(), 'python', 'subsplit.py')
+}
+
 export function modelsDir(): string {
   return join(userDataDir(), 'models')
 }
